@@ -39,13 +39,24 @@ Competition Model:
     - decreases with smaller margin (thin arbitrage = more competition)
     - decreases with longer delay (slower bot = less chance)
 
+Location-Aware Delay Model:
+===========================
+  Polymarket servers are in AWS eu-west-2 (London, UK).
+  Network RTT is added on top of processing delays:
+    - Co-located (Amsterdam/London):  ~4-12ms RTT  → total ~50-160ms
+    - Virginia (US-East):             ~70-90ms RTT  → total ~130-250ms
+    - Seoul (Korea):                  ~250-300ms RTT → total ~400-520ms
+
 Usage:
 ======
-    python backtester.py                          # default (1 hour, WebSocket mode)
-    python backtester.py --hours 6                # backtest last 6 hours
-    python backtester.py --hours 6 --mode polling # simulate polling mode
-    python backtester.py --hours 6 --mode ws      # simulate WebSocket mode
-    python backtester.py --bankroll 1000           # start with $1000
+    python backtester.py                                # default (1hr, Virginia WS)
+    python backtester.py --hours 6                      # backtest last 6 hours
+    python backtester.py --hours 6 --mode korea_ws      # simulate from Seoul
+    python backtester.py --hours 6 --mode virginia_ws   # simulate from Virginia
+    python backtester.py --hours 6 --mode fast_ws       # simulate co-located
+    python backtester.py --compare                      # compare ALL locations
+    python backtester.py --compare-locations             # compare locations only
+    python backtester.py --bankroll 1000                # start with $1000
 """
 
 import argparse
@@ -66,25 +77,75 @@ TARGET = "0x1d0034134e339a309700ff2d34e99fa2d48b0313"
 # ────────────────────────────────────────────────────────────────
 # Delay profiles (milliseconds)
 # ────────────────────────────────────────────────────────────────
+# Network RTT baselines (one-way) to Polymarket servers (AWS eu-west-2 London)
+# These are added ON TOP of processing delays for detection and execution
+NETWORK_RTT = {
+    "colocated":  {"name": "Amsterdam/London", "rtt_min_ms": 2,   "rtt_max_ms": 6},
+    "virginia":   {"name": "Virginia (US-East)", "rtt_min_ms": 35,  "rtt_max_ms": 45},
+    "korea":      {"name": "Seoul (Korea)", "rtt_min_ms": 125, "rtt_max_ms": 150},
+}
+
+# Base processing delays (server-side + local compute, EXCLUDING network)
+_BASE_WS_DETECT = (5, 30)       # WS push arrives almost instantly on server side
+_BASE_WS_DECIDE = (2, 10)       # local compute to evaluate + sign
+_BASE_WS_EXECUTE = (20, 60)     # server order matching + confirmation
+_BASE_POLL_DETECT = (1000, 3000)  # REST polling interval (network-independent)
+_BASE_POLL_DECIDE = (5, 20)
+_BASE_POLL_EXECUTE = (20, 60)
+
+def _build_profile(name: str, location: str, base_detect, base_decide, base_execute):
+    """Build a delay profile by adding network RTT to base processing delays.
+
+    Detection = base_detect + 1x RTT (data travels server → us)
+    Decision  = base_decide (local only, no network)
+    Execution = base_execute + 1x RTT (order travels us → server)
+    Total roundtrip adds ~2x RTT on top of processing.
+    """
+    net = NETWORK_RTT[location]
+    return {
+        "name": name,
+        "location": net["name"],
+        "detection_min_ms":  base_detect[0] + net["rtt_min_ms"],
+        "detection_max_ms":  base_detect[1] + net["rtt_max_ms"],
+        "decision_min_ms":   base_decide[0],
+        "decision_max_ms":   base_decide[1],
+        "execution_min_ms":  base_execute[0] + net["rtt_min_ms"],
+        "execution_max_ms":  base_execute[1] + net["rtt_max_ms"],
+    }
+
 DELAY_PROFILES = {
-    "ws": {
-        "name": "WebSocket",
-        "detection_min_ms": 50,   "detection_max_ms": 150,
-        "decision_min_ms": 5,     "decision_max_ms": 20,
-        "execution_min_ms": 80,   "execution_max_ms": 250,
-    },
-    "polling": {
-        "name": "REST Polling (2s)",
-        "detection_min_ms": 1000, "detection_max_ms": 3000,
-        "decision_min_ms": 5,     "decision_max_ms": 20,
-        "execution_min_ms": 80,   "execution_max_ms": 250,
-    },
-    "fast_ws": {
-        "name": "Optimized WebSocket (co-located)",
-        "detection_min_ms": 10,   "detection_max_ms": 50,
-        "decision_min_ms": 2,     "decision_max_ms": 10,
-        "execution_min_ms": 30,   "execution_max_ms": 100,
-    },
+    # ── Co-located (Amsterdam/London → London) ──
+    "fast_ws": _build_profile(
+        "WS Co-located (Amsterdam)", "colocated",
+        _BASE_WS_DETECT, _BASE_WS_DECIDE, _BASE_WS_EXECUTE,
+    ),
+    # ── Virginia (US-East → London, ~70-90ms RTT) ──
+    "virginia_ws": _build_profile(
+        "WS Virginia (US-East)", "virginia",
+        _BASE_WS_DETECT, _BASE_WS_DECIDE, _BASE_WS_EXECUTE,
+    ),
+    "virginia_poll": _build_profile(
+        "Polling Virginia (US-East)", "virginia",
+        _BASE_POLL_DETECT, _BASE_POLL_DECIDE, _BASE_POLL_EXECUTE,
+    ),
+    # ── Korea (Seoul → London, ~250-300ms RTT) ──
+    "korea_ws": _build_profile(
+        "WS Seoul (Korea)", "korea",
+        _BASE_WS_DETECT, _BASE_WS_DECIDE, _BASE_WS_EXECUTE,
+    ),
+    "korea_poll": _build_profile(
+        "Polling Seoul (Korea)", "korea",
+        _BASE_POLL_DETECT, _BASE_POLL_DECIDE, _BASE_POLL_EXECUTE,
+    ),
+    # ── Legacy aliases (kept for backwards compatibility) ──
+    "ws": _build_profile(
+        "WebSocket (generic)", "virginia",
+        _BASE_WS_DETECT, _BASE_WS_DECIDE, _BASE_WS_EXECUTE,
+    ),
+    "polling": _build_profile(
+        "REST Polling (generic)", "virginia",
+        _BASE_POLL_DETECT, _BASE_POLL_DECIDE, _BASE_POLL_EXECUTE,
+    ),
 }
 
 # ────────────────────────────────────────────────────────────────
@@ -862,10 +923,16 @@ def run_backtest(
     }
 
 
-def run_comparison(hours: float, bankroll: float, max_bet: float, seed: int):
-    """Run backtest across all modes for comparison. Fetches data once."""
+def run_comparison(hours: float, bankroll: float, max_bet: float, seed: int,
+                   modes: list[str] | None = None):
+    """Run backtest across multiple modes for comparison. Fetches data once."""
+    import copy
+
+    if modes is None:
+        modes = ["korea_poll", "korea_ws", "virginia_poll", "virginia_ws", "fast_ws"]
+
     print("\n" + "=" * 70)
-    print("MODE COMPARISON — fetching data once, simulating 3 modes")
+    print(f"LOCATION COMPARISON — fetching data once, simulating {len(modes)} modes")
     print("=" * 70)
 
     # Fetch data once
@@ -876,9 +943,8 @@ def run_comparison(hours: float, bankroll: float, max_bet: float, seed: int):
     windows, start_ts, end_ts = result
 
     summaries = []
-    for mode in ["polling", "ws", "fast_ws"]:
+    for mode in modes:
         print(f"\n{'─' * 70}")
-        import copy
         windows_copy = copy.deepcopy(windows)
         summary = run_backtest(
             hours=hours, mode=mode, bankroll=bankroll,
@@ -892,35 +958,72 @@ def run_comparison(hours: float, bankroll: float, max_bet: float, seed: int):
         print("\n" + "=" * 70)
         print("COMPARISON TABLE")
         print("=" * 70)
-        print(f"{'Mode':<30} {'Executed':>9} {'P&L':>10} {'ROI':>8} {'$/hr':>10}")
-        print("-" * 70)
+        header_fmt = f"{'Mode':<32} {'Location':<16} {'Exec':>5} {'P&L':>10} {'ROI':>8} {'$/hr':>10}"
+        print(header_fmt)
+        print("-" * 85)
         for s in summaries:
-            name = DELAY_PROFILES[s["mode"]]["name"]
+            profile = DELAY_PROFILES[s["mode"]]
+            name = profile["name"]
+            location = profile.get("location", "?")
             hourly = s["profit"] / max(s["hours"], 0.01)
-            print(f"{name:<30} {s['executed']:>9} "
+            print(f"{name:<32} {location:<16} {s['executed']:>5} "
                   f"${s['profit']:>+9.2f} {s['roi_pct']:>+7.2f}% "
                   f"${hourly:>+9.2f}")
-        print("=" * 70)
+        print("=" * 85)
+
+        # Recommendation
+        best = max(summaries, key=lambda s: s["profit"])
+        best_profile = DELAY_PROFILES[best["mode"]]
+        print(f"\n  RECOMMENDATION: {best_profile['name']}")
+        print(f"  Expected: ${best['profit']/max(best['hours'],0.01):+.2f}/hr, "
+              f"{best['roi_pct']:+.2f}% ROI")
+
+        # Korea vs Virginia comparison
+        korea_results = [s for s in summaries if "korea" in s["mode"]]
+        virginia_results = [s for s in summaries if "virginia" in s["mode"]]
+        if korea_results and virginia_results:
+            best_korea = max(korea_results, key=lambda s: s["profit"])
+            best_virginia = max(virginia_results, key=lambda s: s["profit"])
+            if best_virginia["profit"] > best_korea["profit"]:
+                improvement = best_virginia["profit"] - best_korea["profit"]
+                print(f"\n  Virginia vs Korea advantage: ${improvement:+.2f} "
+                      f"({improvement/max(abs(best_korea['profit']),0.01)*100:+.0f}% more profit)")
+                print(f"  → Using your Virginia server is strongly recommended.")
 
 
 def main():
+    all_modes = list(DELAY_PROFILES.keys())
     parser = argparse.ArgumentParser(
-        description="Polymarket Arbitrage Backtester",
+        description="Polymarket Arbitrage Backtester (Location-Aware)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Server: Polymarket runs on AWS eu-west-2 (London, UK).
+
+Available modes:
+  fast_ws        WS from Amsterdam/London (co-located, ~50-160ms)
+  virginia_ws    WS from Virginia US-East (~130-250ms)
+  virginia_poll  Polling from Virginia US-East (~1100-3200ms)
+  korea_ws       WS from Seoul Korea (~400-520ms)
+  korea_poll     Polling from Seoul Korea (~1300-3400ms)
+  ws             WS generic (same as virginia_ws)
+  polling        Polling generic (same as virginia_poll)
+
 Examples:
-  python backtester.py                            Default (1hr, WebSocket)
-  python backtester.py --hours 3                  Last 3 hours
-  python backtester.py --hours 3 --mode polling   Simulate polling mode
-  python backtester.py --hours 3 --compare        Compare all modes
-  python backtester.py --hours 6 --bankroll 1000  Start with $1000
-  python backtester.py --seed 42                  Reproducible results
+  python backtester.py                                  Default (1hr, virginia_ws)
+  python backtester.py --hours 3 --mode korea_ws        Test from Korea
+  python backtester.py --hours 3 --mode virginia_ws     Test from your Virginia server
+  python backtester.py --hours 3 --mode fast_ws         Test co-located
+  python backtester.py --compare                        Compare ALL locations + modes
+  python backtester.py --compare-locations              Compare WS across locations only
+  python backtester.py --hours 6 --bankroll 1000        Start with $1000
+  python backtester.py --seed 42                        Reproducible results
         """,
     )
     parser.add_argument("--hours", type=float, default=1.0,
                         help="Hours of history to backtest (default: 1)")
-    parser.add_argument("--mode", choices=["ws", "polling", "fast_ws"],
-                        default="ws", help="Execution mode to simulate")
+    parser.add_argument("--mode", choices=all_modes,
+                        default="virginia_ws",
+                        help="Execution mode to simulate (default: virginia_ws)")
     parser.add_argument("--bankroll", type=float, default=500.0,
                         help="Starting bankroll in USDC (default: 500)")
     parser.add_argument("--max-bet", type=float, default=50.0,
@@ -928,13 +1031,21 @@ Examples:
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducible results")
     parser.add_argument("--compare", action="store_true",
-                        help="Compare all execution modes")
+                        help="Compare ALL modes (5 profiles: Korea/Virginia/Co-located)")
+    parser.add_argument("--compare-locations", action="store_true",
+                        help="Compare WebSocket only across 3 locations")
 
     args = parser.parse_args()
 
     if args.compare:
         seed = args.seed if args.seed else 42
         run_comparison(args.hours, args.bankroll, args.max_bet, seed)
+    elif args.compare_locations:
+        seed = args.seed if args.seed else 42
+        run_comparison(
+            args.hours, args.bankroll, args.max_bet, seed,
+            modes=["korea_ws", "virginia_ws", "fast_ws"],
+        )
     else:
         run_backtest(
             hours=args.hours,
