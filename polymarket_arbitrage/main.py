@@ -29,7 +29,6 @@ from datetime import datetime, timezone
 
 from config import (
     SCAN_INTERVAL,
-    DRY_RUN,
     MAX_BET_SIZE,
     MAX_BANKROLL_FRACTION,
     MIN_PROFIT_MARGIN,
@@ -227,7 +226,7 @@ class ArbitrageBot:
 
         # --- Market Making: runs on every non-stale update (bid-side) ---
         if not stale and MM_ENABLED:
-            if DRY_RUN:
+            if self.dry_run:
                 self._check_mm_quotes_dry(condition_id, up_book, down_book, market)
             else:
                 self._check_mm_quotes(condition_id, up_book, down_book, market)
@@ -299,19 +298,36 @@ class ArbitrageBot:
 
     def _check_mm_quotes(self, condition_id, up_book, down_book, market):
         """Check if we should post/update market-making quotes for this market."""
-        # 1. Both sides must have a bid
         if up_book.best_bid <= 0 or down_book.best_bid <= 0:
             return
 
-        # 2. Improve best bids by one tick ($0.01)
-        our_up_bid = round(up_book.best_bid + 0.01, 2)
-        our_down_bid = round(down_book.best_bid + 0.01, 2)
-
-        # 3. Profitability check
+        # --- Tier 1: match both bids ---
+        our_up_bid = round(up_book.best_bid, 2)
+        our_down_bid = round(down_book.best_bid, 2)
         combined = our_up_bid + our_down_bid
         margin = 1.0 - combined
+        tier = "T1-match"
+
         if margin < MM_MIN_MARGIN:
-            return
+            # --- Tier 2: improve ONE side by $0.01 ---
+            up_size = up_book.bids[0].size if up_book.bids else 0
+            down_size = down_book.bids[0].size if down_book.bids else 0
+
+            # Try improving the side with less competition
+            if up_size <= down_size:
+                candidate_up = round(up_book.best_bid + 0.01, 2)
+                candidate_down = round(down_book.best_bid, 2)
+            else:
+                candidate_up = round(up_book.best_bid, 2)
+                candidate_down = round(down_book.best_bid + 0.01, 2)
+
+            combined = candidate_up + candidate_down
+            margin = 1.0 - combined
+            if margin < MM_MIN_MARGIN:
+                return
+            our_up_bid = candidate_up
+            our_down_bid = candidate_down
+            tier = "T2-improve1"
 
         # 4. Check existing quotes — skip if price hasn't moved enough
         existing = self._mm_quotes.get(condition_id)
@@ -344,7 +360,7 @@ class ArbitrageBot:
                 "posted_at": time.time(),
             }
             logger.info(
-                f"MM QUOTE: {market.title} | "
+                f"MM QUOTE [{tier}]: {market.title} | "
                 f"BID Up=${our_up_bid:.2f} Down=${our_down_bid:.2f} "
                 f"Combined=${combined:.2f} Margin=${margin:.3f}"
             )
@@ -354,13 +370,32 @@ class ArbitrageBot:
         if up_book.best_bid <= 0 or down_book.best_bid <= 0:
             return
 
-        our_up_bid = round(up_book.best_bid + 0.01, 2)
-        our_down_bid = round(down_book.best_bid + 0.01, 2)
-
+        # --- Tier 1: match both bids ---
+        our_up_bid = round(up_book.best_bid, 2)
+        our_down_bid = round(down_book.best_bid, 2)
         combined = our_up_bid + our_down_bid
         margin = 1.0 - combined
+        tier = "T1-match"
+
         if margin < MM_MIN_MARGIN:
-            return
+            # --- Tier 2: improve ONE side by $0.01 ---
+            up_size = up_book.bids[0].size if up_book.bids else 0
+            down_size = down_book.bids[0].size if down_book.bids else 0
+
+            if up_size <= down_size:
+                candidate_up = round(up_book.best_bid + 0.01, 2)
+                candidate_down = round(down_book.best_bid, 2)
+            else:
+                candidate_up = round(up_book.best_bid, 2)
+                candidate_down = round(down_book.best_bid + 0.01, 2)
+
+            combined = candidate_up + candidate_down
+            margin = 1.0 - combined
+            if margin < MM_MIN_MARGIN:
+                return
+            our_up_bid = candidate_up
+            our_down_bid = candidate_down
+            tier = "T2-improve1"
 
         existing = self._mm_quotes.get(condition_id)
         if existing:
@@ -379,7 +414,7 @@ class ArbitrageBot:
             "posted_at": time.time(),
         }
         logger.info(
-            f"[DRY RUN] MM QUOTE: {market.title} | "
+            f"[DRY RUN] MM QUOTE [{tier}]: {market.title} | "
             f"BID Up=${our_up_bid:.2f} Down=${our_down_bid:.2f} "
             f"Combined=${combined:.2f} Margin=${margin:.3f}"
         )

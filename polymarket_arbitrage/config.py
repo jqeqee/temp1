@@ -59,6 +59,6 @@ TAKER_FEE_RATE = 0.015   # ~1.5% taker fee on crypto markets
 # --- Market Making ---
 MM_ENABLED = os.getenv("MM_ENABLED", "true").lower() == "true"
 MM_QUOTE_SIZE = float(os.getenv("MM_QUOTE_SIZE", "20"))       # tokens per side (benchmark avg ~20)
-MM_MIN_MARGIN = float(os.getenv("MM_MIN_MARGIN", "0.005"))    # combined bids must be < 1.0 - this
+MM_MIN_MARGIN = float(os.getenv("MM_MIN_MARGIN", "0.003"))    # combined bids must be < 1.0 - this
 MM_REQUOTE_THRESHOLD = float(os.getenv("MM_REQUOTE_THRESHOLD", "0.02"))  # requote when price moves this much
 MM_MAX_MARKETS = int(os.getenv("MM_MAX_MARKETS", "3"))         # max concurrent quoted markets
