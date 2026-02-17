@@ -67,8 +67,12 @@ class MarketScanner:
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
 
+    # Only include markets closing within this window (seconds).
+    # 5m/15m markets far in the future have empty orderbooks.
+    MAX_CLOSE_HORIZON = 1800  # 30 minutes
+
     def get_active_markets(self) -> list[BinaryMarket]:
-        """Fetch all active crypto Up/Down markets from Gamma API."""
+        """Fetch active crypto Up/Down markets closing soon."""
         seen_slugs = set()
         markets = []
 
@@ -76,11 +80,14 @@ class MarketScanner:
             for duration in DURATIONS:
                 found = self._search_markets(asset, duration)
                 for m in found:
-                    if m.slug not in seen_slugs:
-                        seen_slugs.add(m.slug)
-                        markets.append(m)
+                    if m.slug in seen_slugs:
+                        continue
+                    if m.seconds_until_close > self.MAX_CLOSE_HORIZON:
+                        continue
+                    seen_slugs.add(m.slug)
+                    markets.append(m)
 
-        logger.info(f"Found {len(markets)} active crypto Up/Down markets")
+        logger.info(f"Found {len(markets)} active crypto Up/Down markets (closing within {self.MAX_CLOSE_HORIZON}s)")
         return markets
 
     def _search_markets(self, asset: str, duration: str) -> list[BinaryMarket]:
