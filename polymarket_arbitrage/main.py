@@ -221,11 +221,21 @@ class ArbitrageBot:
         # opportunity that no longer exists by the time we place an order.
         up_age = up_book.age_ms
         down_age = down_book.age_ms
-        if up_age > self.MAX_BOOK_STALENESS_MS or down_age > self.MAX_BOOK_STALENESS_MS:
+        stale = up_age > self.MAX_BOOK_STALENESS_MS or down_age > self.MAX_BOOK_STALENESS_MS
+        if stale:
             self.stats["stale_skips"] += 1
+
+        # --- Market Making: runs on every non-stale update (bid-side) ---
+        if not stale and MM_ENABLED:
+            if DRY_RUN:
+                self._check_mm_quotes_dry(condition_id, up_book, down_book, market)
+            else:
+                self._check_mm_quotes(condition_id, up_book, down_book, market)
+
+        if stale:
             return
 
-        # Quick check: do best asks sum to less than $1.00?
+        # --- Taker arbitrage: ask-side sweep ---
         best_ask_up = up_book.best_ask
         best_ask_down = down_book.best_ask
 
@@ -282,12 +292,6 @@ class ArbitrageBot:
             self.stats["trades_executed"] += 1
             self.stats["total_invested"] += execution.total_cost
             self.stats["total_profit"] += execution.expected_profit
-
-        # --- Market Making: post GTC bids on both sides ---
-        if MM_ENABLED and not DRY_RUN:
-            self._check_mm_quotes(condition_id, up_book, down_book, market)
-        elif MM_ENABLED and DRY_RUN:
-            self._check_mm_quotes_dry(condition_id, up_book, down_book, market)
 
     # ──────────────────────────────────────────────────────────────
     # Market Making: bid on both sides for maker fills
