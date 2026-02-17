@@ -64,6 +64,7 @@ class ArbitrageBot:
             "start_time": None,
             "ws_updates": 0,
             "arb_checks": 0,
+            "stale_skips": 0,
         }
 
     def run(self):
@@ -190,6 +191,10 @@ class ArbitrageBot:
             await ws_manager.stop()
             self._shutdown()
 
+    # Max allowed age (ms) for the other side's orderbook.
+    # If either book is older than this, skip — data is too stale to trust.
+    MAX_BOOK_STALENESS_MS = 500
+
     def _on_orderbook_update(self, condition_id, up_book, down_book, market_map):
         """
         Called on EVERY orderbook update from WebSocket.
@@ -202,6 +207,15 @@ class ArbitrageBot:
 
         market = market_map.get(condition_id)
         if not market:
+            return
+
+        # Staleness guard: both orderbooks must have been updated recently.
+        # Without this, a stale ask on one side can create a false-positive
+        # opportunity that no longer exists by the time we place an order.
+        up_age = up_book.age_ms
+        down_age = down_book.age_ms
+        if up_age > self.MAX_BOOK_STALENESS_MS or down_age > self.MAX_BOOK_STALENESS_MS:
+            self.stats["stale_skips"] += 1
             return
 
         # Quick check: do best asks sum to less than $1.00?
@@ -443,6 +457,7 @@ class ArbitrageBot:
         if self.use_websocket:
             print(f"WebSocket updates: {self.stats['ws_updates']}")
             print(f"Arbitrage checks: {self.stats['arb_checks']}")
+            print(f"Stale book skips: {self.stats['stale_skips']}")
         else:
             print(f"Total scans: {self.stats['scans']}")
         print(f"Opportunities found: {self.stats['opportunities_found']}")
