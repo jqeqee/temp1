@@ -8,6 +8,7 @@ Market slugs follow the pattern: {asset}-updown-{duration}-{unix_timestamp}
 e.g., "btc-updown-5m-1771264500"
 """
 
+import json
 import time
 import logging
 import requests
@@ -92,7 +93,7 @@ class MarketScanner:
                     "active": "true",
                     "closed": "false",
                     "limit": 20,
-                    "order": "slug",
+                    "order": "createdAt",
                     "ascending": "false",
                 },
                 timeout=10,
@@ -187,10 +188,14 @@ class MarketScanner:
             slug = data.get("slug", "")
             title = data.get("question", data.get("title", ""))
 
-            # Extract token IDs and outcomes
-            clob_token_ids = data.get("clobTokenIds", [])
-            outcome_names = data.get("outcomes", [])
-            outcome_prices = data.get("outcomePrices", [])
+            # Extract token IDs and outcomes (API returns JSON strings)
+            raw_token_ids = data.get("clobTokenIds", [])
+            raw_outcomes = data.get("outcomes", [])
+            raw_prices = data.get("outcomePrices", [])
+
+            clob_token_ids = json.loads(raw_token_ids) if isinstance(raw_token_ids, str) else raw_token_ids
+            outcome_names = json.loads(raw_outcomes) if isinstance(raw_outcomes, str) else raw_outcomes
+            outcome_prices = json.loads(raw_prices) if isinstance(raw_prices, str) else raw_prices
 
             if not clob_token_ids or len(clob_token_ids) < 2:
                 return None
