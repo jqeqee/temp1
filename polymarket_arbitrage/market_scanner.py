@@ -14,7 +14,7 @@ import logging
 import requests
 from dataclasses import dataclass, field
 
-from config import GAMMA_API_URL, DATA_API_URL, ASSETS, DURATIONS
+from config import GAMMA_API_URL, DATA_API_URL, ASSET_DURATION_PAIRS
 
 logger = logging.getLogger(__name__)
 
@@ -76,16 +76,15 @@ class MarketScanner:
         seen_slugs = set()
         markets = []
 
-        for asset in ASSETS:
-            for duration in DURATIONS:
-                found = self._search_markets(asset, duration)
-                for m in found:
-                    if m.slug in seen_slugs:
-                        continue
-                    if m.seconds_until_close > self.MAX_CLOSE_HORIZON:
-                        continue
-                    seen_slugs.add(m.slug)
-                    markets.append(m)
+        for asset, duration in ASSET_DURATION_PAIRS:
+            found = self._search_markets(asset, duration)
+            for m in found:
+                if m.slug in seen_slugs:
+                    continue
+                if m.seconds_until_close > self.MAX_CLOSE_HORIZON:
+                    continue
+                seen_slugs.add(m.slug)
+                markets.append(m)
 
         logger.info(f"Found {len(markets)} active crypto Up/Down markets (closing within {self.MAX_CLOSE_HORIZON}s)")
         return markets
@@ -132,15 +131,14 @@ class MarketScanner:
         now = int(time.time())
         markets = []
 
-        for asset in ASSETS:
-            for duration in DURATIONS:
-                interval = 300 if duration == "5m" else 900
-                window_ts = now - (now % interval)
-                slug = f"{asset}-updown-{duration}-{window_ts}"
+        for asset, duration in ASSET_DURATION_PAIRS:
+            interval = 300 if duration == "5m" else 900
+            window_ts = now - (now % interval)
+            slug = f"{asset}-updown-{duration}-{window_ts}"
 
-                market = self._fetch_market_by_slug(slug, asset, duration, window_ts)
-                if market:
-                    markets.append(market)
+            market = self._fetch_market_by_slug(slug, asset, duration, window_ts)
+            if market:
+                markets.append(market)
 
         return markets
 
@@ -172,21 +170,20 @@ class MarketScanner:
         now = int(time.time())
         windows = []
 
-        for asset in ASSETS:
-            for duration in DURATIONS:
-                interval = 300 if duration == "5m" else 900
-                # Next window start
-                next_ts = now - (now % interval) + interval
+        for asset, duration in ASSET_DURATION_PAIRS:
+            interval = 300 if duration == "5m" else 900
+            # Next window start
+            next_ts = now - (now % interval) + interval
 
-                while next_ts < now + lookahead_seconds:
-                    windows.append({
-                        "asset": asset,
-                        "duration": duration,
-                        "timestamp": next_ts,
-                        "slug": f"{asset}-updown-{duration}-{next_ts}",
-                        "opens_in": next_ts - now,
-                    })
-                    next_ts += interval
+            while next_ts < now + lookahead_seconds:
+                windows.append({
+                    "asset": asset,
+                    "duration": duration,
+                    "timestamp": next_ts,
+                    "slug": f"{asset}-updown-{duration}-{next_ts}",
+                    "opens_in": next_ts - now,
+                })
+                next_ts += interval
 
         return sorted(windows, key=lambda w: w["timestamp"])
 

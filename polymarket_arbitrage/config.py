@@ -24,15 +24,22 @@ MAX_BANKROLL_FRACTION = float(os.getenv("MAX_BANKROLL_FRACTION", "0.05"))
 SCAN_INTERVAL = float(os.getenv("SCAN_INTERVAL", "2.0"))
 
 # --- Market Filters ---
-ASSETS = os.getenv("ASSETS", "btc,eth,sol,xrp").split(",")
-DURATIONS = os.getenv("DURATIONS", "5m,15m").split(",")
+# Actual Polymarket availability:
+#   5m  → BTC only
+#   15m → BTC, ETH, SOL, XRP
+ASSET_DURATION_PAIRS = [
+    ("btc", "5m"),
+    ("btc", "15m"),
+    ("eth", "15m"),
+    ("sol", "15m"),
+    ("xrp", "15m"),
+]
 
-# Slug patterns for crypto up/down markets
-# e.g. "btc-updown-5m-1771264500", "eth-updown-15m-1771263900"
-MARKET_SLUG_PATTERNS = []
-for asset in ASSETS:
-    for duration in DURATIONS:
-        MARKET_SLUG_PATTERNS.append(f"{asset}-updown-{duration}")
+# Flat lists kept for backward compatibility / .env override
+ASSETS = list(dict.fromkeys(a for a, _ in ASSET_DURATION_PAIRS))
+DURATIONS = list(dict.fromkeys(d for _, d in ASSET_DURATION_PAIRS))
+
+MARKET_SLUG_PATTERNS = [f"{a}-updown-{d}" for a, d in ASSET_DURATION_PAIRS]
 
 # --- Dry Run ---
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
