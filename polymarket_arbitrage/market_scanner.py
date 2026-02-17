@@ -69,12 +69,16 @@ class MarketScanner:
 
     def get_active_markets(self) -> list[BinaryMarket]:
         """Fetch all active crypto Up/Down markets from Gamma API."""
+        seen_slugs = set()
         markets = []
 
         for asset in ASSETS:
             for duration in DURATIONS:
                 found = self._search_markets(asset, duration)
-                markets.extend(found)
+                for m in found:
+                    if m.slug not in seen_slugs:
+                        seen_slugs.add(m.slug)
+                        markets.append(m)
 
         logger.info(f"Found {len(markets)} active crypto Up/Down markets")
         return markets
