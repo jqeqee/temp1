@@ -14,7 +14,7 @@ import logging
 import requests
 from dataclasses import dataclass, field
 
-from config import GAMMA_API_URL, DATA_API_URL, ASSET_DURATION_PAIRS
+from config import GAMMA_API_URL, CLOB_API_URL, ASSET_DURATION_PAIRS
 
 logger = logging.getLogger(__name__)
 
@@ -243,27 +243,38 @@ class MarketScanner:
 
     def get_market_prices(self, token_ids: list[str]) -> dict[str, dict]:
         """
-        Get current prices for multiple tokens via Data API.
+        Get current prices for multiple tokens via CLOB orderbook API.
         Returns {token_id: {"bid": float, "ask": float, "mid": float}}
         """
         prices = {}
-        try:
-            token_id_str = ",".join(token_ids)
-            resp = self.session.get(
-                f"{DATA_API_URL}/prices",
-                params={"tokens": token_id_str},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        for token_id in token_ids:
+            try:
+                resp = self.session.get(
+                    f"{CLOB_API_URL}/book",
+                    params={"token_id": token_id},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
 
-            for token_id, price_data in data.items():
-                if isinstance(price_data, dict):
-                    prices[token_id] = price_data
+                bids = data.get("bids", [])
+                asks = data.get("asks", [])
+
+                best_bid = float(bids[0]["price"]) if bids else 0.0
+                best_ask = float(asks[0]["price"]) if asks else 0.0
+
+                if best_bid and best_ask:
+                    mid = (best_bid + best_ask) / 2
                 else:
-                    prices[token_id] = {"mid": float(price_data)}
+                    mid = best_bid or best_ask
 
-        except requests.RequestException as e:
-            logger.error(f"Failed to fetch prices: {e}")
+                prices[token_id] = {
+                    "bid": best_bid,
+                    "ask": best_ask,
+                    "mid": round(mid, 4),
+                }
+
+            except requests.RequestException as e:
+                logger.error(f"Failed to fetch orderbook for {token_id[:20]}...: {e}")
 
         return prices
