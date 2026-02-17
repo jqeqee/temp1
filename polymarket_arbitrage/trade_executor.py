@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType
+from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, AssetType
 from py_clob_client.order_builder.constants import BUY
 
 from config import (
@@ -177,6 +177,14 @@ class TradeExecutor:
             self.client.set_api_creds(self.client.create_or_derive_api_creds())
             self._initialized = True
             logger.info("CLOB client initialized successfully")
+
+            # Fetch actual USDC balance for position sizing
+            bal_resp = self.client.get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            self.bankroll = float(bal_resp.get("balance", 0))
+            logger.info(f"Wallet USDC balance: ${self.bankroll:.2f}")
+
             return True
         except Exception as e:
             logger.error(f"Failed to initialize CLOB client: {e}")
@@ -227,6 +235,10 @@ class TradeExecutor:
         )
 
         if max_total_cost <= 0:
+            logger.warning(
+                f"Skipping trade: max_total_cost=${max_total_cost:.2f} "
+                f"(bankroll=${self.bankroll:.2f}, fraction={MAX_BANKROLL_FRACTION})"
+            )
             return orders
 
         # For each side, split into multiple orders matching the
@@ -398,6 +410,10 @@ class TradeExecutor:
         )
 
         if max_total_cost <= 0:
+            logger.warning(
+                f"Skipping trade: max_total_cost=${max_total_cost:.2f} "
+                f"(bankroll=${self.bankroll:.2f}, fraction={MAX_BANKROLL_FRACTION})"
+            )
             return execution
 
         # Build order lists from detailed orderbook levels

@@ -31,6 +31,7 @@ from config import (
     SCAN_INTERVAL,
     DRY_RUN,
     MAX_BET_SIZE,
+    MAX_BANKROLL_FRACTION,
     MIN_PROFIT_MARGIN,
     ASSETS,
     DURATIONS,
@@ -369,7 +370,11 @@ class ArbitrageBot:
             logger.info(f"Scan interval: {SCAN_INTERVAL}s")
         logger.info("=" * 60)
 
-        if not self.dry_run:
+        if self.dry_run:
+            # Set bankroll so position sizing logic works in simulation
+            self.executor.bankroll = MAX_BET_SIZE / MAX_BANKROLL_FRACTION
+            logger.info(f"Dry-run bankroll: ${self.executor.bankroll:.2f}")
+        else:
             if not self.executor.initialize():
                 logger.error("Failed to initialize trading client. Exiting.")
                 self.running = False
