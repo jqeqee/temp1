@@ -630,6 +630,56 @@ class TradeExecutor:
                 f"Consider hedging the excess {abs(up_filled - down_filled):.0f} tokens."
             )
 
+    def place_mm_quotes(
+        self,
+        up_token_id: str,
+        down_token_id: str,
+        up_price: float,
+        down_price: float,
+        size: float,
+    ) -> list[str] | None:
+        """Post GTC buy orders on both sides simultaneously for market making."""
+        if not self._initialized:
+            return None
+
+        max_cost = up_price * size + down_price * size
+        affordable = min(MAX_BET_SIZE, self.bankroll * MAX_BANKROLL_FRACTION)
+        if max_cost > affordable:
+            size = affordable / (up_price + down_price)
+            if size < 1:
+                return None
+
+        order_ids = []
+        futures = []
+        for token_id, price in [(up_token_id, up_price), (down_token_id, down_price)]:
+            future = self._executor.submit(
+                self._place_order, token_id, price, size, "mm", OrderType.GTC, "GTC"
+            )
+            futures.append(future)
+
+        for future in futures:
+            try:
+                result = future.result(timeout=10)
+                if result.success and result.order_id:
+                    order_ids.append(result.order_id)
+                    self._open_order_ids.append(result.order_id)
+            except Exception as e:
+                logger.error(f"MM order failed: {e}")
+
+        return order_ids if order_ids else None
+
+    def cancel_mm_orders(self, order_ids: list[str]):
+        """Cancel specific market-making orders."""
+        if not self._initialized:
+            return
+        for oid in order_ids:
+            try:
+                self.client.cancel(oid)
+                if oid in self._open_order_ids:
+                    self._open_order_ids.remove(oid)
+            except Exception as e:
+                logger.debug(f"Failed to cancel MM order {oid}: {e}")
+
     def cleanup_open_orders(self):
         """Cancel all open GTC orders from this session."""
         if not self._initialized or not self._open_order_ids:

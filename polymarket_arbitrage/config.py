@@ -19,7 +19,7 @@ SIGNATURE_TYPE = int(os.getenv("SIGNATURE_TYPE", "0"))
 
 # --- Trading Parameters ---
 MAX_BET_SIZE = float(os.getenv("MAX_BET_SIZE", "50.0"))
-MIN_PROFIT_MARGIN = float(os.getenv("MIN_PROFIT_MARGIN", "0.01"))
+MIN_PROFIT_MARGIN = float(os.getenv("MIN_PROFIT_MARGIN", "0.002"))
 MAX_BANKROLL_FRACTION = float(os.getenv("MAX_BANKROLL_FRACTION", "0.05"))
 SCAN_INTERVAL = float(os.getenv("SCAN_INTERVAL", "2.0"))
 
@@ -55,3 +55,10 @@ TARGET_ACCOUNT_PROFILE = "0x1d0034134e"
 PREFER_MAKER_ORDERS = True
 MAKER_REBATE_RATE = 0.0  # varies, set to 0 for conservative estimates
 TAKER_FEE_RATE = 0.015   # ~1.5% taker fee on crypto markets
+
+# --- Market Making ---
+MM_ENABLED = os.getenv("MM_ENABLED", "true").lower() == "true"
+MM_QUOTE_SIZE = float(os.getenv("MM_QUOTE_SIZE", "20"))       # tokens per side (benchmark avg ~20)
+MM_MIN_MARGIN = float(os.getenv("MM_MIN_MARGIN", "0.005"))    # combined bids must be < 1.0 - this
+MM_REQUOTE_THRESHOLD = float(os.getenv("MM_REQUOTE_THRESHOLD", "0.02"))  # requote when price moves this much
+MM_MAX_MARKETS = int(os.getenv("MM_MAX_MARKETS", "3"))         # max concurrent quoted markets

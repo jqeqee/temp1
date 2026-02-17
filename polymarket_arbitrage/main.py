@@ -35,6 +35,11 @@ from config import (
     MIN_PROFIT_MARGIN,
     ASSETS,
     DURATIONS,
+    MM_ENABLED,
+    MM_QUOTE_SIZE,
+    MM_MIN_MARGIN,
+    MM_REQUOTE_THRESHOLD,
+    MM_MAX_MARKETS,
 )
 from market_scanner import MarketScanner
 from orderbook_analyzer import OrderbookAnalyzer
@@ -56,6 +61,7 @@ class ArbitrageBot:
         self.tracker = AccountTracker()
 
         self.running = False
+        self._mm_quotes: dict = {}  # condition_id -> {up_price, down_price, order_ids, posted_at}
         self.stats = {
             "scans": 0,
             "opportunities_found": 0,
@@ -194,7 +200,7 @@ class ArbitrageBot:
 
     # Max allowed age (ms) for the other side's orderbook.
     # If either book is older than this, skip — data is too stale to trust.
-    MAX_BOOK_STALENESS_MS = 500
+    MAX_BOOK_STALENESS_MS = 3000
 
     def _on_orderbook_update(self, condition_id, up_book, down_book, market_map):
         """
@@ -276,6 +282,103 @@ class ArbitrageBot:
             self.stats["trades_executed"] += 1
             self.stats["total_invested"] += execution.total_cost
             self.stats["total_profit"] += execution.expected_profit
+
+        # --- Market Making: post GTC bids on both sides ---
+        if MM_ENABLED and not DRY_RUN:
+            self._check_mm_quotes(condition_id, up_book, down_book, market)
+        elif MM_ENABLED and DRY_RUN:
+            self._check_mm_quotes_dry(condition_id, up_book, down_book, market)
+
+    # ──────────────────────────────────────────────────────────────
+    # Market Making: bid on both sides for maker fills
+    # ──────────────────────────────────────────────────────────────
+
+    def _check_mm_quotes(self, condition_id, up_book, down_book, market):
+        """Check if we should post/update market-making quotes for this market."""
+        # 1. Both sides must have a bid
+        if up_book.best_bid <= 0 or down_book.best_bid <= 0:
+            return
+
+        # 2. Improve best bids by one tick ($0.01)
+        our_up_bid = round(up_book.best_bid + 0.01, 2)
+        our_down_bid = round(down_book.best_bid + 0.01, 2)
+
+        # 3. Profitability check
+        combined = our_up_bid + our_down_bid
+        margin = 1.0 - combined
+        if margin < MM_MIN_MARGIN:
+            return
+
+        # 4. Check existing quotes — skip if price hasn't moved enough
+        existing = self._mm_quotes.get(condition_id)
+        if existing:
+            up_diff = abs(existing["up_price"] - our_up_bid)
+            down_diff = abs(existing["down_price"] - our_down_bid)
+            if up_diff < MM_REQUOTE_THRESHOLD and down_diff < MM_REQUOTE_THRESHOLD:
+                return
+            # Cancel stale quotes before re-posting
+            self.executor.cancel_mm_orders(existing["order_ids"])
+
+        # 5. Enforce max concurrent markets
+        if len(self._mm_quotes) >= MM_MAX_MARKETS and condition_id not in self._mm_quotes:
+            return
+
+        # 6. Post quotes
+        result = self.executor.place_mm_quotes(
+            up_token_id=up_book.asset_id,
+            down_token_id=down_book.asset_id,
+            up_price=our_up_bid,
+            down_price=our_down_bid,
+            size=MM_QUOTE_SIZE,
+        )
+
+        if result:
+            self._mm_quotes[condition_id] = {
+                "up_price": our_up_bid,
+                "down_price": our_down_bid,
+                "order_ids": result,
+                "posted_at": time.time(),
+            }
+            logger.info(
+                f"MM QUOTE: {market.title} | "
+                f"BID Up=${our_up_bid:.2f} Down=${our_down_bid:.2f} "
+                f"Combined=${combined:.2f} Margin=${margin:.3f}"
+            )
+
+    def _check_mm_quotes_dry(self, condition_id, up_book, down_book, market):
+        """Dry-run version of market-making quote check (log only)."""
+        if up_book.best_bid <= 0 or down_book.best_bid <= 0:
+            return
+
+        our_up_bid = round(up_book.best_bid + 0.01, 2)
+        our_down_bid = round(down_book.best_bid + 0.01, 2)
+
+        combined = our_up_bid + our_down_bid
+        margin = 1.0 - combined
+        if margin < MM_MIN_MARGIN:
+            return
+
+        existing = self._mm_quotes.get(condition_id)
+        if existing:
+            up_diff = abs(existing["up_price"] - our_up_bid)
+            down_diff = abs(existing["down_price"] - our_down_bid)
+            if up_diff < MM_REQUOTE_THRESHOLD and down_diff < MM_REQUOTE_THRESHOLD:
+                return
+
+        if len(self._mm_quotes) >= MM_MAX_MARKETS and condition_id not in self._mm_quotes:
+            return
+
+        self._mm_quotes[condition_id] = {
+            "up_price": our_up_bid,
+            "down_price": our_down_bid,
+            "order_ids": [],
+            "posted_at": time.time(),
+        }
+        logger.info(
+            f"[DRY RUN] MM QUOTE: {market.title} | "
+            f"BID Up=${our_up_bid:.2f} Down=${our_down_bid:.2f} "
+            f"Combined=${combined:.2f} Margin=${margin:.3f}"
+        )
 
     def _walk_asks(self, up_asks, down_asks):
         """Fast orderbook walk for WebSocket callback (must be fast)."""
@@ -366,6 +469,8 @@ class ArbitrageBot:
         logger.info(f"Durations: {', '.join(DURATIONS)}")
         logger.info(f"Min profit margin: ${MIN_PROFIT_MARGIN}")
         logger.info(f"Max bet size: ${MAX_BET_SIZE}")
+        logger.info(f"Market making: {'ENABLED' if MM_ENABLED else 'DISABLED'}"
+                     f"{f' (size={MM_QUOTE_SIZE}, margin>{MM_MIN_MARGIN}, max_markets={MM_MAX_MARKETS})' if MM_ENABLED else ''}")
         if not self.use_websocket:
             logger.info(f"Scan interval: {SCAN_INTERVAL}s")
         logger.info("=" * 60)
@@ -381,6 +486,12 @@ class ArbitrageBot:
 
     def _shutdown(self):
         """Common shutdown for both modes."""
+        # Cancel all active MM quotes first
+        for cid, quote in self._mm_quotes.items():
+            if quote.get("order_ids"):
+                self.executor.cancel_mm_orders(quote["order_ids"])
+        self._mm_quotes.clear()
+
         self.executor.cleanup_open_orders()
         self.executor.print_stats()
         self._print_session_stats()
